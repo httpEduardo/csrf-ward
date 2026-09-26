@@ -1,6 +1,6 @@
 # csrf-ward
 
-Scans HTML files for forms that change server-side state without CSRF protection.
+`csrf-ward` scans rendered HTML files for forms that may change server-side state without a recognizable CSRF token. It helps review saved pages, template output, and crawler snapshots during development or security triage.
 
 Cross-Site Request Forgery lets a malicious page submit a form to your site using the victim's session. The standard defense is a secret token embedded in every state-changing form. This tool checks rendered HTML — saved pages, templates output, or snapshots from a crawler — and reports the forms where that token is missing.
 
@@ -17,7 +17,7 @@ Token fields from common frameworks are recognized, including Django (`csrfmiddl
 
 ## Usage
 
-Requires Python 3.9+, no dependencies.
+Requires Python 3.9 or later. No third-party packages are needed.
 
 ```bash
 python csrf_ward.py pages.html
@@ -35,7 +35,14 @@ pages.html: 6 form(s)
 6 form(s) scanned, 3 issue(s)
 ```
 
-Several files can be passed at once (`python csrf_ward.py site/*.html`). The older `--input FILE` flag still works.
+Pass one or more files as positional arguments, or use the repeatable `--input` / `-i` option:
+
+```bash
+python csrf_ward.py site/*.html
+python csrf_ward.py --input pages.html -i templates.html
+```
+
+The positional form is preferred; `--input` remains available for scripts that use the earlier interface.
 
 Exit codes: `0` no issues, `1` at least one issue, `2` a file couldn't be read.
 

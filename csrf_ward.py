@@ -66,7 +66,9 @@ class FormParser(HTMLParser):
                 self._current.fields.append(name)
             # Framework-style method override, e.g. <input name="_method" value="DELETE">
             if name.lower() == "_method" and a.get("value"):
-                self._current.method = a["value"].strip().lower()
+                override = a["value"].strip().lower()
+                if override in STATE_CHANGING:
+                    self._current.method = override
             if name.lower() in TOKEN_NAMES:
                 if a.get("value", "").strip():
                     self._current.token = True
