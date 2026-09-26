@@ -4,11 +4,22 @@
       <input type="hidden" name="csrf_token" value="abc" />
       <input name="amount" />
     </form>
-    <form action="/profile" method="post">
+    <form action="/profile" method="POST">
       <input name="display" />
     </form>
     <form action="/search" method="get">
       <input name="q" />
+    </form>
+    <form action="/account/delete" method="get">
+      <button>Delete account</button>
+    </form>
+    <form action="/settings" method="post">
+      <input type="hidden" name="authenticity_token" value="" />
+      <input name="email" />
+    </form>
+    <form action="/posts/42" method="post">
+      <input type="hidden" name="_method" value="DELETE" />
+      <input type="hidden" name="_token" value="f3a9c1" />
     </form>
   </body>
 </html>

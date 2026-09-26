@@ -1,58 +1,123 @@
+"""Scan HTML files for state-changing forms that lack a CSRF token."""
+
+from __future__ import annotations
+
 import argparse
 import re
 import sys
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from pathlib import Path
 
-FORM_RE = re.compile(r"<form\b[^>]*>(.*?)</form>", re.IGNORECASE | re.DOTALL)
-ACTION_RE = re.compile(r"action=\"([^\"]*)\"|action='([^']*)'", re.IGNORECASE)
-METHOD_RE = re.compile(r"method=\"([^\"]*)\"|method='([^']*)'", re.IGNORECASE)
-TOKEN_RE = re.compile(r"name=\"(csrf|csrf_token|_csrf|xsrf)\"|name='(csrf|csrf_token|_csrf|xsrf)'", re.IGNORECASE)
+# Field names used by common frameworks for anti-CSRF tokens.
+TOKEN_NAMES = {
+    "csrf", "csrf_token", "csrftoken", "_csrf", "_csrf_token", "xsrf", "_xsrf", "xsrf_token",
+    "csrfmiddlewaretoken",         # Django
+    "authenticity_token",          # Rails
+    "__requestverificationtoken",  # ASP.NET
+    "_token",                      # Laravel
+    "anti-csrf-token",
+}
 
+STATE_CHANGING = {"post", "put", "patch", "delete"}
 
-def parse_forms(html: str) -> list[dict[str, str]]:
-    forms = []
-    for match in FORM_RE.finditer(html):
-        block = match.group(0)
-        action_match = ACTION_RE.search(block)
-        method_match = METHOD_RE.search(block)
-        action = action_match.group(1) or action_match.group(2) if action_match else ""
-        method = method_match.group(1) or method_match.group(2) if method_match else "get"
-        has_token = TOKEN_RE.search(block) is not None
-        forms.append({
-            "action": action,
-            "method": method.lower(),
-            "token": "yes" if has_token else "no",
-        })
-    return forms
+# Actions that change state even though the form uses GET.
+SENSITIVE_GET = re.compile(r"(delete|remove|logout|transfer|pay|update|reset|disable|approve)", re.IGNORECASE)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Scan HTML forms for CSRF tokens.")
-    parser.add_argument("--input", required=True, help="HTML file to scan")
-    args = parser.parse_args()
+@dataclass
+class Form:
+    line: int
+    action: str = ""
+    method: str = "get"
+    token: bool = False
+    empty_token: bool = False
+    fields: list[str] = field(default_factory=list)
 
-    try:
-        with open(args.input, "r", encoding="utf-8") as handle:
-            html = handle.read()
-    except OSError as exc:
-        print(f"Failed to read {args.input}: {exc}", file=sys.stderr)
-        return 1
+    @property
+    def status(self) -> str:
+        if self.method in STATE_CHANGING:
+            if self.token:
+                return "ok"
+            return "empty-token" if self.empty_token else "missing"
+        if SENSITIVE_GET.search(self.action):
+            return "state-changing-get"
+        return "ok"
 
-    forms = parse_forms(html)
-    if not forms:
-        print("No forms found.")
-        return 0
 
-    missing = 0
-    for idx, form in enumerate(forms, start=1):
-        action = form["action"] or "(no action)"
-        status = "ok" if form["token"] == "yes" or form["method"] == "get" else "missing"
-        if status == "missing":
-            missing += 1
-        print(f"Form {idx}: {form['method'].upper()} {action} -> {status}")
+class FormParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms: list[Form] = []
+        self._current: Form | None = None
 
-    print(f"\nForms scanned: {len(forms)}")
-    print(f"Forms missing CSRF token: {missing}")
-    return 0
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "form":
+            self._current = Form(
+                line=self.getpos()[0],
+                action=a.get("action", ""),
+                method=(a.get("method") or "get").strip().lower(),
+            )
+            self.forms.append(self._current)
+        elif tag in {"input", "button", "textarea", "select"} and self._current is not None:
+            name = a.get("name", "")
+            if name:
+                self._current.fields.append(name)
+            # Framework-style method override, e.g. <input name="_method" value="DELETE">
+            if name.lower() == "_method" and a.get("value"):
+                self._current.method = a["value"].strip().lower()
+            if name.lower() in TOKEN_NAMES:
+                if a.get("value", "").strip():
+                    self._current.token = True
+                else:
+                    self._current.empty_token = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self._current = None
+
+
+def scan_html(html: str) -> list[Form]:
+    parser = FormParser()
+    parser.feed(html)
+    parser.close()
+    return parser.forms
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Find HTML forms that are missing CSRF protection.")
+    parser.add_argument("paths", nargs="*", help="HTML files to scan")
+    parser.add_argument("--input", "-i", action="append", default=[], help="HTML file to scan (repeatable)")
+    args = parser.parse_args(argv)
+
+    paths = args.paths + args.input
+    if not paths:
+        parser.error("provide at least one HTML file")
+
+    problems = 0
+    total = 0
+    for path in paths:
+        try:
+            html = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"error: cannot read {path}: {exc}", file=sys.stderr)
+            return 2
+
+        forms = scan_html(html)
+        total += len(forms)
+        print(f"{path}: {len(forms)} form(s)")
+        for form in forms:
+            status = form.status
+            marker = "  ok     " if status == "ok" else "  ISSUE  "
+            action = form.action or "(same page)"
+            print(f"{marker}line {form.line:<4} {form.method.upper():<6} {action}  -> {status}")
+            if status != "ok":
+                problems += 1
+        print()
+
+    print(f"{total} form(s) scanned, {problems} issue(s)")
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":
